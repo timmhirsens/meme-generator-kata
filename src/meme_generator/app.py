@@ -1,3 +1,4 @@
+import asyncio
 import io
 import os
 from contextlib import asynccontextmanager
@@ -11,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 
 from meme_generator.captions import CaptionError
+from meme_generator.limits import MAX_LONG_SIDE, MAX_SOURCE_PIXELS
 from meme_generator.rendering import load_font, render_caption
 from meme_generator.uploads import UploadError, read_upload
 
@@ -36,6 +38,9 @@ def create_app() -> FastAPI:
         redoc_url=None,
         openapi_url="/openapi.json" if docs else None,
     )
+    # Admit before consuming the upload, not after buffering or decoding it.
+    # One full-resolution image per worker bounds peak memory at the 25 MP limit.
+    slots = asyncio.Semaphore(1)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
@@ -102,14 +107,28 @@ def create_app() -> FastAPI:
         },
     )
     async def create_meme(request: Request) -> Response:
-        image, top, bottom = await read_upload(request)
-        return await run_in_threadpool(process_meme, image, top, bottom)
+        try:
+            await asyncio.wait_for(slots.acquire(), timeout=3)
+        except TimeoutError:
+            response = _error(503, "busy", "The service is busy. Please retry shortly.")
+            response.headers["Retry-After"] = "1"
+            return response
+        try:
+            image, top, bottom = await asyncio.wait_for(read_upload(request), timeout=10)
+            return await run_in_threadpool(process_meme, image, top, bottom)
+        except TimeoutError:
+            return _error(408, "upload_timeout", "The upload took too long.")
+        finally:
+            slots.release()
 
     def process_meme(image: bytes, top_text: str, bottom_text: str) -> Response:
         if not top_text.strip() and not bottom_text.strip():
             return _error(400, "caption_missing", "Provide top_text, bottom_text or both.")
         try:
             source = Image.open(io.BytesIO(image))
+            if source.width * source.height > MAX_SOURCE_PIXELS:
+                return _error(422, "image_too_large", "The image exceeds 25 megapixels.")
+            source.draft("RGB", (MAX_LONG_SIDE, MAX_LONG_SIDE))
             source.load()
         except Image.DecompressionBombError:
             return _error(422, "image_too_large", "The image has too many pixels.")
@@ -118,6 +137,7 @@ def create_app() -> FastAPI:
         format = source.format
         if format not in {"JPEG", "PNG", "WEBP"}:
             return _error(415, "unsupported_image", "Only JPEG, PNG and WebP are supported.")
+        source.thumbnail((MAX_LONG_SIDE, MAX_LONG_SIDE), Image.Resampling.LANCZOS)
         mode = "RGB" if format == "JPEG" else "RGBA"
         meme = render_caption(source.convert(mode), top_text, bottom_text)
         out = io.BytesIO()
