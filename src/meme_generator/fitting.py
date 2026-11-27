@@ -12,7 +12,7 @@ def initial_font_size(image_height: int) -> int:
 
 
 def stroke_width(font_size: int) -> int:
-    return max(1, font_size // 15)
+    return max(2, font_size // 15)
 
 
 @lru_cache(maxsize=128)
