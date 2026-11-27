@@ -8,10 +8,11 @@ Der Dienst ist über einen ersten Stand nie hinausgekommen. Was er heute kann, s
 
 ## Was der Dienst kann
 
-- Seite unter `/`: JPEG hochladen, Top text, Bottom text oder beides eingeben, „Create meme“. Die Seite zeigt das Meme oder die Fehlermeldung der API.
-- API: `POST /memes` mit `multipart/form-data` (`image`, `top_text`, `bottom_text`), Antwort ist das Meme als JPEG. Swagger UI unter `/docs`.
-- Fehler kommen als JSON `{"error": "…", "message": "…"}`: ohne Text 400, Bild kein JPEG oder nicht lesbar 415.
-- Top text steht am oberen, Bottom text am unteren Rand, in fester Schriftgröße (1/10 der Bildhöhe) und ohne automatischen Umbruch.
+- Seite unter `/`: JPEG, PNG, WebP oder GIF hochladen, Top text, Bottom text oder beides eingeben, „Create meme“. Ausgabe im Eingabeformat; GIFs bleiben animiert, PNG/WebP behalten Transparenz.
+- API: `POST /memes` mit `multipart/form-data` (`image`, `top_text`, `bottom_text`). Swagger UI unter `/docs` (abschaltbar mit `MEME_DOCS_ENABLED=false`).
+- Captions: höchstens 200 Zeichen je Feld vor Normalisierung; Großschreibung, Zeilenumbrüche, Prüfung gegen Antons Zeichensatz und konkrete Fehlermeldungen. Beide Texte werden unabhängig umgebrochen und eingepasst, nie abgeschnitten.
+- Grenzen: 10 MiB Bilddatei, 25 Megapixel vor Dekodierung, längste Ausgabeseite höchstens 1600 px und höchstens 300 GIF-Frames. Drei aktive Uploads/Renderings je Worker; gleichzeitig dekodierte/verkleinerte Bilder belegen gemeinsam höchstens 25 MP Originalbildfläche.
+- Einheitliche Fehler als JSON `{"error": "…", "message": "…", "request_id": "…"}`: fehlende Eingaben 400, Upload zu groß 413, ungültiges Format 415, ungültige Caption/Bildgrenze 422. Überlast nach drei Sekunden 503 mit `Retry-After`; unvollständiger Upload nach zehn Sekunden 408. Uploads und Ergebnisse bleiben im RAM.
 
 ## Aufsetzen
 
@@ -58,6 +59,11 @@ Uvicorns separate Access-Logs; bei eigenem Uvicorn-Aufruf ebenfalls `--no-access
 uv run pytest       # Unit-Tests, schnell, ohne Browser
 uv run pytest e2e   # startet den Server selbst, testet über HTTP und im Browser
 ```
+
+Containerbetrieb mit schreibgeschütztem Dateisystem, die vollständige Suite im
+Container und reproduzierbare Lastmessungen: [Betrieb und Leistungsnachweis](docs/operations.md).
+Die Lesbarkeitsmatrix wird mit `uv run python scripts/readability.py --help`
+über echte HTTP-Anfragen für alle neun Hintergründe mit kurzen und langen Captions erzeugt.
 
 ### Video aufnehmen
 

@@ -1,0 +1,16 @@
+**
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!LICENSE
+!LICENSE-agentic-katas
+!src/
+!src/**
+!assets/
+!assets/**
+!tests/
+!tests/**
+!e2e/
+!e2e/**
+**/__pycache__/
+**/*.pyc

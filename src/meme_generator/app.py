@@ -42,8 +42,9 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(RequestLoggingMiddleware)
     # Admit before consuming the upload, not after buffering or decoding it.
-    # One full-resolution image per worker bounds peak memory at the 25 MP limit.
-    slots = asyncio.Semaphore(1)
+    # Three in-flight uploads/renders; the pipeline separately budgets the total
+    # full-resolution pixels so concurrency cannot multiply the 25 MP decode budget.
+    slots = asyncio.Semaphore(3)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
@@ -71,7 +72,10 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(UploadError)
     async def upload_error(_: Request, exc: UploadError) -> JSONResponse:
-        return _error(exc.status, exc.code, str(exc))
+        response = _error(exc.status, exc.code, str(exc))
+        if exc.status == 503:
+            response.headers["Retry-After"] = "1"
+        return response
 
     @app.get("/", include_in_schema=False)
     def index() -> HTMLResponse:

@@ -5,11 +5,12 @@ import socket
 import struct
 import time
 import zlib
+from contextlib import ExitStack
 from urllib.parse import urlparse
 
 import httpx
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 @pytest.mark.parametrize("width,status", [(5000, 415), (5001, 422)])
@@ -38,18 +39,46 @@ def test_output_has_a_bounded_long_side(client: httpx.Client) -> None:
     assert result.size == (1600, 1108)
 
 
+@pytest.mark.parametrize("mode", ["RGBA", "LA"])
+def test_resized_png_keeps_alpha_aware_lanczos_pixels(client: httpx.Client, mode: str) -> None:
+    image = Image.new("RGBA", (2600, 1800), (190, 70, 25, 0))
+    draw = ImageDraw.Draw(image)
+    draw.polygon([(200, 100), (2300, 1700), (800, 1600)], fill=(20, 80, 220, 64))
+    draw.rectangle((1300, 0, 1900, 1800), fill=(40, 190, 90, 255))
+    image = image.convert(mode)
+    out = io.BytesIO()
+    image.save(out, "PNG")
+    # Independent reference: Pillow's original alpha-aware resize. The memory
+    # optimization must not replace premultiplied Lanczos with channel-wise resize.
+    image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+    expected = image.convert("RGBA")
+    response = client.post(
+        "/memes", files={"image": ("large.png", out.getvalue())}, data={"top_text": "hello"}
+    )
+    assert response.status_code == 200
+    with Image.open(io.BytesIO(response.content)) as result:
+        assert result.size == expected.size == (1600, 1108)
+        assert result.mode == "RGBA"
+        center = (0, 300, 1600, 800)
+        assert result.crop(center).tobytes() == expected.crop(center).tobytes()
+
+
 def test_overload_times_out_then_recovers(client: httpx.Client, base_url: str, jpeg: bytes) -> None:
     url = urlparse(base_url)
     assert url.hostname and url.port
-    # Keep the admitted request busy receiving an unfinished upload. This forces
+    # Keep all three admission slots busy receiving unfinished uploads. This forces
     # contention deterministically without monkeypatches or making rendering slow.
-    with socket.create_connection((url.hostname, url.port), timeout=10) as slow:
-        slow.sendall(
-            b"POST /memes HTTP/1.1\r\nHost: localhost\r\n"
-            b"Content-Type: multipart/form-data; boundary=x\r\n"
-            b"Transfer-Encoding: chunked\r\n\r\n"
-            b"5\r\n--x\r\n\r\n"
-        )
+    with ExitStack() as held:
+        for _ in range(3):
+            slow = held.enter_context(
+                socket.create_connection((url.hostname, url.port), timeout=10)
+            )
+            slow.sendall(
+                b"POST /memes HTTP/1.1\r\nHost: localhost\r\n"
+                b"Content-Type: multipart/form-data; boundary=x\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+                b"5\r\n--x\r\n\r\n"
+            )
         time.sleep(0.1)
         started = time.monotonic()
         response = client.post(

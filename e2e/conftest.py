@@ -1,5 +1,6 @@
 """Starts a real uvicorn process on a free port; tests talk to it over HTTP or through a browser."""
 
+import os
 import socket
 import subprocess
 import sys
@@ -28,6 +29,13 @@ def free_port() -> int:
 @pytest.fixture(scope="session")
 def base_url() -> Iterator[str]:
     """Also pytest-playwright's base URL, so `page.goto("/")` opens this server."""
+    external_url = os.environ.get("MEME_TEST_BASE_URL")
+    if external_url:
+        url = external_url.rstrip("/")
+        response = httpx.get(f"{url}/health", timeout=10)
+        response.raise_for_status()
+        yield url
+        return
     port = free_port()
     server = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "meme_generator.app:app", "--port", str(port)]

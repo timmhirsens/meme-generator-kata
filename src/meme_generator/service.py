@@ -1,6 +1,9 @@
 """The image pipeline shared by the HTTP and local-file interfaces."""
 
 import io
+from collections.abc import Generator
+from contextlib import contextmanager
+from threading import Condition
 from time import perf_counter
 
 from PIL import GifImagePlugin, Image, ImageSequence, UnidentifiedImageError
@@ -8,6 +11,41 @@ from PIL import GifImagePlugin, Image, ImageSequence, UnidentifiedImageError
 from meme_generator.limits import MAX_LONG_SIDE, MAX_SOURCE_PIXELS, MAX_UPLOAD_BYTES
 from meme_generator.rendering import render_caption
 from meme_generator.uploads import UploadError
+
+_decode_condition = Condition()
+_decoding_pixels = 0
+
+
+@contextmanager
+def _decode_capacity(pixels: int) -> Generator[None]:
+    """Allow parallel small decodes without multiplying the full-size pixel budget."""
+    global _decoding_pixels
+    with _decode_condition:
+        if not _decode_condition.wait_for(
+            lambda: _decoding_pixels + pixels <= MAX_SOURCE_PIXELS, timeout=3
+        ):
+            raise UploadError(503, "busy", "The service is busy. Please retry shortly.")
+        _decoding_pixels += pixels
+    try:
+        yield
+    finally:
+        with _decode_condition:
+            _decoding_pixels -= pixels
+            _decode_condition.notify_all()
+
+
+def _thumbnail(source: Image.Image) -> Image.Image:
+    """Consume an owned image, retaining Pillow's exact alpha-aware Lanczos result."""
+    mode = source.mode
+    if mode in {"RGBA", "LA"} and max(source.size) > MAX_LONG_SIDE:
+        # Pillow makes this same premultiplied copy internally, but otherwise
+        # retains the full original throughout both resampling passes.
+        with source.convert({"RGBA": "RGBa", "LA": "La"}[mode]) as premultiplied:
+            source.close()
+            premultiplied.thumbnail((MAX_LONG_SIDE, MAX_LONG_SIDE), Image.Resampling.LANCZOS)
+            return premultiplied.convert(mode)
+    source.thumbnail((MAX_LONG_SIDE, MAX_LONG_SIDE), Image.Resampling.LANCZOS)
+    return source
 
 
 def _animated_meme(source: Image.Image, top: str, bottom: str) -> bytes:
@@ -18,8 +56,7 @@ def _animated_meme(source: Image.Image, top: str, bottom: str) -> bytes:
         if frame.width * frame.height > MAX_SOURCE_PIXELS:
             raise UploadError(422, "image_too_large", "The image exceeds 25 megapixels.")
         duration = frame.info.get("duration", 0)
-        rgba = frame.convert("RGBA")
-        rgba.thumbnail((MAX_LONG_SIDE, MAX_LONG_SIDE), Image.Resampling.LANCZOS)
+        rgba = _thumbnail(frame.convert("RGBA"))
         meme = render_caption(rgba, top, bottom)
         # Full composited frames, independently paletted, avoid retaining hundreds
         # of decoded frames. Index 255 is reserved for transparent pixels.
@@ -64,7 +101,9 @@ def create_meme(
         if source.width * source.height > MAX_SOURCE_PIXELS:
             raise UploadError(422, "image_too_large", "The image exceeds 25 megapixels.")
         if source.format == "GIF":
-            result = _animated_meme(source, top, bottom)
+            # GIF disposal/compositing retains a full canvas between frames.
+            with _decode_capacity(MAX_SOURCE_PIXELS):
+                result = _animated_meme(source, top, bottom)
             metrics["animation_ms"] = round((perf_counter() - started) * 1000, 3)
             return result, "image/gif"
         format = source.format
@@ -72,18 +111,23 @@ def create_meme(
             raise UploadError(
                 415, "unsupported_image", "Only JPEG, PNG, WebP and GIF are supported."
             )
-        source.draft("RGB", (MAX_LONG_SIDE, MAX_LONG_SIDE))
-        source.load()
+        with _decode_capacity(source.width * source.height):
+            source.draft("RGB", (MAX_LONG_SIDE, MAX_LONG_SIDE))
+            source.load()
+            metrics["decode_ms"] = round((perf_counter() - started) * 1000, 3)
+            started = perf_counter()
+            source = _thumbnail(source)
+            resize_ms = (perf_counter() - started) * 1000
     except Image.DecompressionBombError as exc:
         raise UploadError(422, "image_too_large", "The image has too many pixels.") from exc
     except (UnidentifiedImageError, OSError) as exc:
         raise UploadError(415, "unsupported_image", "The image could not be read.") from exc
-    metrics["decode_ms"] = round((perf_counter() - started) * 1000, 3)
     started = perf_counter()
-    source.thumbnail((MAX_LONG_SIDE, MAX_LONG_SIDE), Image.Resampling.LANCZOS)
     mode = "RGB" if format == "JPEG" else "RGBA"
-    meme = render_caption(source.convert(mode), top, bottom)
-    metrics["render_ms"] = round((perf_counter() - started) * 1000, 3)
+    if source.mode != mode:
+        source = source.convert(mode)
+    meme = render_caption(source, top, bottom)
+    metrics["render_ms"] = round(resize_ms + (perf_counter() - started) * 1000, 3)
     started = perf_counter()
     out = io.BytesIO()
     meme.save(out, format=format, quality=90)
