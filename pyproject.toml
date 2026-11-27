@@ -5,6 +5,7 @@ description = "Meme Generator Service (DankDeploy kata)"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "fastapi>=0.115",
+    "fonttools>=4.60",
     "pillow>=11",
     "python-multipart>=0.0.20",
     "uvicorn>=0.34",

@@ -1,13 +1,12 @@
 """Rendering: draw the Caption on one frame."""
 
 from functools import cache
-from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from meme_generator.captions import FONT_PATH, prepare_caption, supported_codepoints
 from meme_generator.fitting import initial_font_size, stroke_width
 
-FONT_PATH = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "Anton-Regular.ttf"
 FILL = "white"
 OUTLINE = "black"
 
@@ -20,12 +19,15 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
 def load_font() -> None:
     """Fail at startup, not on the first request, if the font is missing."""
     _font(initial_font_size(1000))
+    supported_codepoints()
 
 
 def render_caption(
     frame: Image.Image, top_text: str | None, bottom_text: str | None
 ) -> Image.Image:
     """Return a copy of `frame` with the Caption drawn in Meme style."""
+    top_text = prepare_caption(top_text)
+    bottom_text = prepare_caption(bottom_text)
     meme = frame.copy()
     width, height = meme.size
     size = initial_font_size(height)
@@ -35,10 +37,11 @@ def render_caption(
     outline = stroke_width(size)
 
     def write(xy: tuple[float, float], text: str, anchor: str) -> None:
-        draw.text(
+        draw.multiline_text(
             xy,
-            text.upper(),
+            text,
             anchor=anchor,
+            align="center",
             font=font,
             fill=FILL,
             stroke_width=outline,
