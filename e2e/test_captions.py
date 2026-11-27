@@ -26,7 +26,8 @@ def test_caption_errors(
 ) -> None:
     response = client.post("/memes", files={"image": ("a.jpg", jpeg)}, data={field: text})
     assert response.status_code == status
-    assert set(response.json()) == {"error", "message"}
+    assert set(response.json()) == {"error", "message", "request_id"}
+    assert response.json()["request_id"] == response.headers["x-request-id"]
     assert message in response.json()["message"]
     if "😀" in text:
         assert "🚀" in response.json()["message"]

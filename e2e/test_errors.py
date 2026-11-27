@@ -24,5 +24,5 @@ def test_errors_have_one_schema(
 ) -> None:
     response = client.request(method, path, **kwargs)  # type: ignore[arg-type]
     assert response.status_code == status
-    assert set(response.json()) == {"error", "message"}
+    assert set(response.json()) == {"error", "message", "request_id"}
     assert all(isinstance(value, str) and value for value in response.json().values())

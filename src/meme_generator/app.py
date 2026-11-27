@@ -1,26 +1,28 @@
 import asyncio
-import io
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from time import perf_counter
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from PIL import Image, UnidentifiedImageError
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 
 from meme_generator.captions import CaptionError
-from meme_generator.limits import MAX_LONG_SIDE, MAX_SOURCE_PIXELS
-from meme_generator.rendering import load_font, render_caption
+from meme_generator.logs import RequestLoggingMiddleware, request_id
+from meme_generator.rendering import load_font
+from meme_generator.service import create_meme as process_meme
 from meme_generator.uploads import UploadError, read_upload
 
 INDEX_HTML = Path(__file__).with_name("index.html")
 
 
 def _error(status: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse({"error": code, "message": message}, status_code=status)
+    return JSONResponse(
+        {"error": code, "message": message, "request_id": request_id.get()}, status_code=status
+    )
 
 
 @asynccontextmanager
@@ -38,6 +40,7 @@ def create_app() -> FastAPI:
         redoc_url=None,
         openapi_url="/openapi.json" if docs else None,
     )
+    app.add_middleware(RequestLoggingMiddleware)
     # Admit before consuming the upload, not after buffering or decoding it.
     # One full-resolution image per worker bounds peak memory at the 25 MP limit.
     slots = asyncio.Semaphore(1)
@@ -107,6 +110,8 @@ def create_app() -> FastAPI:
         },
     )
     async def create_meme(request: Request) -> Response:
+        metrics = request.state.metrics
+        started = perf_counter()
         try:
             await asyncio.wait_for(slots.acquire(), timeout=3)
         except TimeoutError:
@@ -114,35 +119,16 @@ def create_app() -> FastAPI:
             response.headers["Retry-After"] = "1"
             return response
         try:
+            metrics["queue_ms"] = round((perf_counter() - started) * 1000, 3)
+            started = perf_counter()
             image, top, bottom = await asyncio.wait_for(read_upload(request), timeout=10)
-            return await run_in_threadpool(process_meme, image, top, bottom)
+            metrics["upload_ms"] = round((perf_counter() - started) * 1000, 3)
+            data, media_type = await run_in_threadpool(process_meme, image, top, bottom, metrics)
+            return Response(data, media_type=media_type)
         except TimeoutError:
             return _error(408, "upload_timeout", "The upload took too long.")
         finally:
             slots.release()
-
-    def process_meme(image: bytes, top_text: str, bottom_text: str) -> Response:
-        if not top_text.strip() and not bottom_text.strip():
-            return _error(400, "caption_missing", "Provide top_text, bottom_text or both.")
-        try:
-            source = Image.open(io.BytesIO(image))
-            if source.width * source.height > MAX_SOURCE_PIXELS:
-                return _error(422, "image_too_large", "The image exceeds 25 megapixels.")
-            source.draft("RGB", (MAX_LONG_SIDE, MAX_LONG_SIDE))
-            source.load()
-        except Image.DecompressionBombError:
-            return _error(422, "image_too_large", "The image has too many pixels.")
-        except (UnidentifiedImageError, OSError):
-            return _error(415, "unsupported_image", "The image could not be read.")
-        format = source.format
-        if format not in {"JPEG", "PNG", "WEBP"}:
-            return _error(415, "unsupported_image", "Only JPEG, PNG and WebP are supported.")
-        source.thumbnail((MAX_LONG_SIDE, MAX_LONG_SIDE), Image.Resampling.LANCZOS)
-        mode = "RGB" if format == "JPEG" else "RGBA"
-        meme = render_caption(source.convert(mode), top_text, bottom_text)
-        out = io.BytesIO()
-        meme.save(out, format=format, quality=90)
-        return Response(out.getvalue(), media_type=f"image/{format.lower()}")
 
     return app
 
