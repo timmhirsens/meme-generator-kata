@@ -11,6 +11,7 @@ from PIL import Image, UnidentifiedImageError
 from starlette.exceptions import HTTPException
 from starlette.formparsers import MultiPartParser
 
+from meme_generator.captions import CaptionError
 from meme_generator.limits import MULTIPART_SPOOL_BYTES
 from meme_generator.rendering import load_font, render_caption
 
@@ -47,6 +48,10 @@ def create_app() -> FastAPI:
             "Provide an image file." if missing_image else "The request fields are invalid.",
         )
 
+    @app.exception_handler(CaptionError)
+    async def caption_error(_: Request, exc: CaptionError) -> JSONResponse:
+        return _error(exc.status, exc.code, str(exc))
+
     @app.exception_handler(HTTPException)
     async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
         response = _error(exc.status_code, "http_error", str(exc.detail))
@@ -76,9 +81,7 @@ def create_app() -> FastAPI:
         top_text: Annotated[str | None, Form()] = None,
         bottom_text: Annotated[str | None, Form()] = None,
     ) -> Response:
-        top = (top_text or "").strip()
-        bottom = (bottom_text or "").strip()
-        if not top and not bottom:
+        if not (top_text or "").strip() and not (bottom_text or "").strip():
             return _error(400, "caption_missing", "Provide top_text, bottom_text or both.")
         try:
             source = Image.open(io.BytesIO(image.file.read()))
@@ -87,7 +90,7 @@ def create_app() -> FastAPI:
             return _error(415, "unsupported_image", "The image could not be read.")
         if source.format != "JPEG":
             return _error(415, "unsupported_image", "Only JPEG is supported so far.")
-        meme = render_caption(source.convert("RGB"), top, bottom)
+        meme = render_caption(source.convert("RGB"), top_text, bottom_text)
         out = io.BytesIO()
         meme.save(out, format="JPEG", quality=90)
         return Response(out.getvalue(), media_type="image/jpeg")
