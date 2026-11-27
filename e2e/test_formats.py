@@ -70,9 +70,9 @@ def test_format_identity_and_alpha(client: httpx.Client, format: str, mode: str)
     )
 
 
-def test_gif_remains_unsupported(client: httpx.Client) -> None:
+def test_bmp_remains_unsupported(client: httpx.Client) -> None:
     response = client.post(
-        "/memes", files={"image": ("a.gif", encoded_image("GIF", "P"))}, data={"top_text": "GIF"}
+        "/memes", files={"image": ("a.bmp", encoded_image("BMP", "RGB"))}, data={"top_text": "BMP"}
     )
     assert response.status_code == 415
     assert response.json()["error"] == "unsupported_image"
