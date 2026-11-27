@@ -86,7 +86,7 @@ def create_app() -> FastAPI:
         response_model=None,
         responses={
             200: {
-                "content": {"image/jpeg": {}, "image/png": {}, "image/webp": {}},
+                "content": {"image/jpeg": {}, "image/png": {}, "image/webp": {}, "image/gif": {}},
                 "description": "The meme in the uploaded image's format",
             }
         },
