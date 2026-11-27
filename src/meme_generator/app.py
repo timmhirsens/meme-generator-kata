@@ -74,7 +74,12 @@ def create_app() -> FastAPI:
     @app.post(
         "/memes",
         response_model=None,
-        responses={200: {"content": {"image/jpeg": {}}, "description": "The Meme"}},
+        responses={
+            200: {
+                "content": {"image/jpeg": {}, "image/png": {}, "image/webp": {}},
+                "description": "The meme in the uploaded image's format",
+            }
+        },
     )
     def create_meme(
         image: Annotated[UploadFile, File(...)],
@@ -88,12 +93,14 @@ def create_app() -> FastAPI:
             source.load()
         except (UnidentifiedImageError, OSError):
             return _error(415, "unsupported_image", "The image could not be read.")
-        if source.format != "JPEG":
-            return _error(415, "unsupported_image", "Only JPEG is supported so far.")
-        meme = render_caption(source.convert("RGB"), top_text, bottom_text)
+        format = source.format
+        if format not in {"JPEG", "PNG", "WEBP"}:
+            return _error(415, "unsupported_image", "Only JPEG, PNG and WebP are supported.")
+        mode = "RGB" if format == "JPEG" else "RGBA"
+        meme = render_caption(source.convert(mode), top_text, bottom_text)
         out = io.BytesIO()
-        meme.save(out, format="JPEG", quality=90)
-        return Response(out.getvalue(), media_type="image/jpeg")
+        meme.save(out, format=format, quality=90)
+        return Response(out.getvalue(), media_type=f"image/{format.lower()}")
 
     return app
 
