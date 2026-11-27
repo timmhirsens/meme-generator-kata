@@ -4,9 +4,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from PIL import Image, UnidentifiedImageError
+from starlette.exceptions import HTTPException
 from starlette.formparsers import MultiPartParser
 
 from meme_generator.limits import MULTIPART_SPOOL_BYTES
@@ -35,6 +37,26 @@ def create_app() -> FastAPI:
         redoc_url=None,
         openapi_url="/openapi.json" if docs else None,
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        missing_image = any(error["loc"] == ("body", "image") for error in exc.errors())
+        return _error(
+            400,
+            "image_missing" if missing_image else "invalid_request",
+            "Provide an image file." if missing_image else "The request fields are invalid.",
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
+        response = _error(exc.status_code, "http_error", str(exc.detail))
+        if exc.headers:
+            response.headers.update(exc.headers)
+        return response
+
+    @app.exception_handler(Exception)
+    async def internal_error(_: Request, exc: Exception) -> JSONResponse:
+        return _error(500, "internal_error", "The request could not be completed.")
 
     @app.get("/", include_in_schema=False)
     def index() -> HTMLResponse:
