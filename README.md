@@ -32,6 +32,26 @@ uv run python -m meme_generator
 
 Dann <http://127.0.0.1:8000> im Browser öffnen. Anderer Port: Umgebungsvariable `MEME_PORT`.
 
+### Lokal ohne HTTP rendern
+
+```sh
+uv run python -m meme_generator render input.jpg output.jpg --top-text "Hallo" --bottom-text "Welt"
+```
+
+CLI und API benutzen dieselbe Bildpipeline und erzeugen dieselben Bytes. Nur die CLI schreibt
+die ausdrücklich angegebene Ausgabedatei; die API hält Uploads und Ergebnisse im Speicher.
+`python -m meme_generator` (oder `serve`) startet weiterhin den Server.
+
+### Request-ID und private Logs
+
+Jede Antwort trägt `X-Request-ID`, Fehler-JSON zusätzlich `request_id`. Eine übergebene ID
+aus 1–64 ASCII-Buchstaben, Ziffern oder `-` bleibt erhalten; andere werden ersetzt.
+Der Server schreibt genau eine JSON-Metadatenzeile pro Anfrage auf stdout: ID, Status,
+Bildformat/-größe, Textlängen und Zeiten für Warteschlange, Upload, Dekodieren, Rendern und
+Kodieren, soweit der jeweilige Schritt erreicht wurde. Caption, Dateiname, URL/Query,
+Bilddaten und Exception-Inhalte werden nicht geloggt. Der mitgelieferte Server deaktiviert
+Uvicorns separate Access-Logs; bei eigenem Uvicorn-Aufruf ebenfalls `--no-access-log` setzen.
+
 ## Testen
 
 ```sh
