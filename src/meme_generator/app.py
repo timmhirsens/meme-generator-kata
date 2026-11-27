@@ -2,20 +2,18 @@ import io
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from PIL import Image, UnidentifiedImageError
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
-from starlette.formparsers import MultiPartParser
 
 from meme_generator.captions import CaptionError
-from meme_generator.limits import MULTIPART_SPOOL_BYTES
 from meme_generator.rendering import load_font, render_caption
+from meme_generator.uploads import UploadError, read_upload
 
-MultiPartParser.spool_max_size = MULTIPART_SPOOL_BYTES
 INDEX_HTML = Path(__file__).with_name("index.html")
 
 
@@ -63,6 +61,10 @@ def create_app() -> FastAPI:
     async def internal_error(_: Request, exc: Exception) -> JSONResponse:
         return _error(500, "internal_error", "The request could not be completed.")
 
+    @app.exception_handler(UploadError)
+    async def upload_error(_: Request, exc: UploadError) -> JSONResponse:
+        return _error(exc.status, exc.code, str(exc))
+
     @app.get("/", include_in_schema=False)
     def index() -> HTMLResponse:
         return HTMLResponse(INDEX_HTML.read_text(encoding="utf-8"))
@@ -80,17 +82,37 @@ def create_app() -> FastAPI:
                 "description": "The meme in the uploaded image's format",
             }
         },
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "multipart/form-data": {
+                        "schema": {
+                            "type": "object",
+                            "required": ["image"],
+                            "properties": {
+                                "image": {"type": "string", "format": "binary"},
+                                "top_text": {"type": "string"},
+                                "bottom_text": {"type": "string"},
+                            },
+                        }
+                    }
+                },
+            }
+        },
     )
-    def create_meme(
-        image: Annotated[UploadFile, File(...)],
-        top_text: Annotated[str | None, Form()] = None,
-        bottom_text: Annotated[str | None, Form()] = None,
-    ) -> Response:
-        if not (top_text or "").strip() and not (bottom_text or "").strip():
+    async def create_meme(request: Request) -> Response:
+        image, top, bottom = await read_upload(request)
+        return await run_in_threadpool(process_meme, image, top, bottom)
+
+    def process_meme(image: bytes, top_text: str, bottom_text: str) -> Response:
+        if not top_text.strip() and not bottom_text.strip():
             return _error(400, "caption_missing", "Provide top_text, bottom_text or both.")
         try:
-            source = Image.open(io.BytesIO(image.file.read()))
+            source = Image.open(io.BytesIO(image))
             source.load()
+        except Image.DecompressionBombError:
+            return _error(422, "image_too_large", "The image has too many pixels.")
         except (UnidentifiedImageError, OSError):
             return _error(415, "unsupported_image", "The image could not be read.")
         format = source.format
