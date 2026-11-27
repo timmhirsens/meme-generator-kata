@@ -36,6 +36,16 @@ def test_parallel_requests_are_correlated_without_content(tmp_path: Path, jpeg: 
                 else:
                     raise RuntimeError("server did not start")
 
+                expected: list[bytes] = []
+                for number in range(20):
+                    control = client.post(
+                        "/memes",
+                        files={"image": ("control.jpg", jpeg)},
+                        data={"top_text": "private-caption-sentinel" + "X" * number},
+                    )
+                    assert control.status_code == 200
+                    expected.append(control.content)
+
                 def submit(number: int) -> None:
                     response = client.post(
                         "/memes?private-query-sentinel",
@@ -45,6 +55,7 @@ def test_parallel_requests_are_correlated_without_content(tmp_path: Path, jpeg: 
                     )
                     assert response.status_code == 200
                     assert response.headers["x-request-id"] == f"parallel-{number}"
+                    assert response.content == expected[number]
 
                 with ThreadPoolExecutor(max_workers=20) as pool:
                     list(pool.map(submit, range(20)))
